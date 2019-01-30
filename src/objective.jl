@@ -64,12 +64,16 @@ function set_objective_function(model::Model, func::MOI.AbstractScalarFunction)
               typeof(func), ".")
     end
     MOI.set(model, attr, func)
-    # Keeping the explicit `return` is helpful for type inference because we
-    # don't know what `MOI.set` will return.
+    # Nonlinear objectives override regular objectives, so if there was a
+    # nonlinear objective set, we must clear it.
+    if model.nlp_data !== nothing
+        model.nlp_data.nlobj = nothing
+    end
     return
 end
 
 function set_objective_function(model::Model, func::AbstractJuMPScalar)
+    check_belongs_to_model(func, model)
     set_objective_function(model, moi_function(func))
 end
 
@@ -83,7 +87,7 @@ function set_objective(model::Model, sense::MOI.OptimizationSense, func)
     error("The objective function `$(func)` is not supported by JuMP.")
 end
 
-""""
+"""
     objective_function_type(model::Model)::AbstractJuMPScalar
 
 Return the type of the objective function.
@@ -117,14 +121,14 @@ x
 julia> @objective(model, Min, 2x + 1)
 2 x + 1
 
-julia> JuMP.objective_function(model, JuMP.AffExpr)
+julia> objective_function(model, AffExpr)
 2 x + 1
 
-julia> JuMP.objective_function(model, JuMP.QuadExpr)
+julia> objective_function(model, QuadExpr)
 2 x + 1
 
-julia> typeof(JuMP.objective_function(model, JuMP.QuadExpr))
-JuMP.GenericQuadExpr{Float64,VariableRef}
+julia> typeof(objective_function(model, QuadExpr))
+GenericQuadExpr{Float64,VariableRef}
 ```
 We see with the last two commands that even if the objective function is affine,
 as it is convertible to a quadratic function, it can be queried as a quadratic
@@ -132,7 +136,7 @@ function and the result is quadratic.
 
 However, it is not convertible to a variable.
 ```jldoctest objective_function; filter = r"Stacktrace:.*"s
-julia> JuMP.objective_function(model, JuMP.VariableRef)
+julia> objective_function(model, VariableRef)
 ERROR: InexactError: convert(MathOptInterface.SingleVariable, MathOptInterface.ScalarAffineFunction{Float64}(MathOptInterface.ScalarAffineTerm{Float64}[ScalarAffineTerm{Float64}(2.0, VariableIndex(1))], 1.0))
 Stacktrace:
  [1] convert at /home/blegat/.julia/dev/MathOptInterface/src/functions.jl:398 [inlined]

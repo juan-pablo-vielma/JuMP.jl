@@ -439,6 +439,11 @@ function build_constraint(_error::Function, x::Vector{<:AbstractJuMPScalar},
                           set::MOI.AbstractVectorSet)
     return VectorConstraint(x, set)
 end
+function build_constraint(_error::Function, a::Vector{<:Number},
+                          set::MOI.AbstractVectorSet)
+    return build_constraint(_error, convert(Vector{AffExpr}, a), set)
+end
+
 function build_constraint(_error::Function, x::AbstractArray,
                           set::MOI.AbstractScalarSet)
     return _error("Unexpected vector in scalar constraint. Did you mean to use",
@@ -646,7 +651,7 @@ function parseSDconstraint(_error::Function, sense::Symbol, lhs, rhs)
         _error("Invalid sense $sense in SDP constraint")
     end
     vectorized = false
-    parsecode, buildcall = parse_one_operator_constraint(_error, false, Val(:in), aff, :(PSDCone()))
+    parsecode, buildcall = parse_one_operator_constraint(_error, false, Val(:in), aff, :(JuMP.PSDCone()))
     vectorized, parsecode, buildcall
 end
 
@@ -711,21 +716,21 @@ end
 """
     @build_constraint(constraint_expr)
 
-Constructs a `JuMP.ScalarConstraint` or `JuMP.VectorConstraint` using the same
+Constructs a `ScalarConstraint` or `VectorConstraint` using the same
 machinery as [`@constraint`](@ref) but without adding the constraint to a model.
 
 Constraints using broadcast operators like `x .<= 1` are also supported and will
-create arrays of `JuMP.ScalarConstraint` or `JuMP.VectorConstraint`.
+create arrays of `ScalarConstraint` or `VectorConstraint`.
 
 ## Examples
 
 ```jldoctest; setup = :(using JuMP)
 model = Model();
 @variable(model, x);
-JuMP.@build_constraint(2x >= 1)
+@build_constraint(2x >= 1)
 
 # output
-JuMP.ScalarConstraint{JuMP.GenericAffExpr{Float64,VariableRef},MathOptInterface.GreaterThan{Float64}}(2 x, MathOptInterface.GreaterThan{Float64}(1.0))
+ScalarConstraint{GenericAffExpr{Float64,VariableRef},MathOptInterface.GreaterThan{Float64}}(2 x, MathOptInterface.GreaterThan{Float64}(1.0))
 """
 macro build_constraint(constraint_expr)
     _error(str...) = macro_error(:build_constraint, args, str...)
@@ -889,7 +894,7 @@ julia> @objective(model, Max, 2x - 1)
 To set a quadratic objective and set the objective sense programatically, do
 as follows:
 ```jldoctest @objective
-julia> sense = JuMP.MOI.MIN_SENSE
+julia> sense = MOI.MIN_SENSE
 MIN_SENSE::OptimizationSense = 0
 
 julia> @objective(model, sense, x^2 - 2x + 1)
@@ -932,7 +937,9 @@ end
 """
     @expression(args...)
 
-efficiently builds a linear, quadratic, or second-order cone expression but does not add to model immediately. Instead, returns the expression which can then be inserted in other constraints. For example:
+Efficiently builds a linear or quadratic expression but does not add to model
+immediately. Instead, returns the expression which can then be inserted in other
+constraints. For example:
 
 ```julia
 @expression(m, shared, sum(i*x[i] for i=1:5))
@@ -940,7 +947,8 @@ efficiently builds a linear, quadratic, or second-order cone expression but does
 @constraint(m, shared + z <= 10)
 ```
 
-The `ref` accepts index sets in the same way as `@variable`, and those indices can be used in the construction of the expressions:
+The `ref` accepts index sets in the same way as `@variable`, and those indices
+can be used in the construction of the expressions:
 
 ```julia
 @expression(m, expr[i=1:3], i*sum(x[j] for j=1:3))
@@ -1019,7 +1027,7 @@ end
 const EMPTYSTRING = ""
 
 function macro_error(macroname, args, str...)
-    error("In @$macroname($(join(args, ", "))): ", str...)
+    error("In `@$macroname($(join(args, ", ")))`: ", str...)
 end
 
 # Given a base_name and idxvars, returns an expression that constructs the name
@@ -1100,8 +1108,8 @@ end
 """
     @variable(model, kw_args...)
 
-Add an *anonymous* (see [Names](@ref)) variable to the model `model` described
-by the keyword arguments `kw_args` and returns the variable.
+Add an *anonymous* variable to the model `model` described by the keyword
+arguments `kw_args` and returns the variable.
 
     @variable(model, expr, args..., kw_args...)
 
@@ -1386,7 +1394,16 @@ macro variable(args...)
     return assert_validmodel(model, macro_code)
 end
 
-# TODO: Add a docstring.
+"""
+    @NLobjective(model, sense, expression)
+
+Add a nonlinear objective to `model` with optimization sense `sense`.
+`sense` must be `Max` or `Min`.
+
+# Example
+
+    @NLobjective(model, Max, 2x + 1 + sin(x))
+"""
 macro NLobjective(model, sense, x)
     _error(str...) = macro_error(:NLobjective, (model, sense, x), str...)
     sense_expr = moi_sense(_error, sense)
@@ -1398,7 +1415,17 @@ macro NLobjective(model, sense, x)
     return assert_validmodel(esc(model), macro_return(code, nothing))
 end
 
-# TODO: Add a docstring.
+"""
+    @NLconstraint(m::Model, expr)
+
+Add a constraint described by the nonlinear expression `expr`. See also
+[`@constraint`](@ref). For example:
+
+```julia
+@NLconstraint(model, sin(x) <= 1)
+@NLconstraint(model, [i = 1:3], sin(i * x) <= 1 / i)
+```
+"""
 macro NLconstraint(m, x, extra...)
     esc_m = esc(m)
     # Two formats:
@@ -1476,7 +1503,24 @@ macro NLconstraint(m, x, extra...)
     return assert_validmodel(esc_m, macro_code)
 end
 
-# TODO: Add a docstring.
+"""
+    @NLexpression(args...)
+
+Efficiently build a nonlinear expression which can then be inserted in other
+nonlinear constraints and the objective. See also [`@expression`]. For example:
+
+```julia
+@NLexpression(model, my_expr, sin(x)^2 + cos(x^2))
+@NLconstraint(model, my_expr + y >= 5)
+@NLobjective(model, Min, my_expr)
+```
+
+Indexing over sets and anonymous expressions are also supported:
+```julia
+@NLexpression(m, my_expr_1[i=1:3], sin(i * x))
+my_expr_2 = @NLexpression(m, log(1 + sum(exp(x[i])) for i in 1:2))
+```
+"""
 macro NLexpression(args...)
     args, kw_args, requestedcontainer = extract_kw_args(args)
     if length(args) <= 1
@@ -1520,7 +1564,7 @@ nonlinear expressions.
 ```jldoctest
 model = Model()
 @NLparameter(model, x == 10)
-JuMP.value(x)
+value(x)
 
 # output
 10.0
@@ -1537,7 +1581,7 @@ Uses the same syntax for specifying index sets as [`@variable`](@ref).
 ```jldoctest
 model = Model()
 @NLparameter(model, y[i = 1:10] == 2 * i)
-JuMP.value(y[9])
+value(y[9])
 
 # output
 18.0

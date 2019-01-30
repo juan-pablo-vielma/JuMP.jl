@@ -23,25 +23,7 @@ import ForwardDiff
 include("Derivatives/Derivatives.jl")
 using .Derivatives
 
-export
-    Model, VariableRef, AffExpr, QuadExpr,
-    with_optimizer,
-    NonlinearConstraint,
-    ConstraintRef,
-    SecondOrderCone, RotatedSecondOrderCone, PSDCone,
-    optimize!,
-    set_name,
-    set_lower_bound, set_upper_bound,
-    set_start_value,
-    linear_terms,
-
-# Macros and support functions
-    @expression, @expressions, @NLexpression, @NLexpressions,
-    @variable, @variables, @constraint, @constraints,
-    @NLconstraint, @NLconstraints,
-    @SDconstraint, @SDconstraints,
-    @objective, @NLobjective,
-    @NLparameter, @constraintref
+# Exports are at the end of the file.
 
 # Deprecations for JuMP v0.18 -> JuMP v0.19 transition
 Base.@deprecate(getobjectivevalue, JuMP.objective_value)
@@ -135,7 +117,6 @@ function (optimizer_factory::OptimizerFactory)()
                                          optimizer_factory.kwargs...)
 end
 
-###############################################################################
 # Model
 
 # Model has three modes:
@@ -165,6 +146,11 @@ mutable struct Model <: AbstractModel
     # In MANUAL and AUTOMATIC modes, CachingOptimizer.
     # In DIRECT mode, will hold an AbstractOptimizer.
     moi_backend::MOI.AbstractOptimizer
+    # List of bridges to add in addition to the ones added in
+    # `MOI.Bridges.full_bridge_optimizer`. With `BridgeableConstraint`, the
+    # same bridge may be added many times so we store them in a `Set` instead
+    # of, e.g., a `Vector`.
+    bridge_types::Set{Any}
     # Hook into a solve call...function of the form f(m::Model; kwargs...),
     # where kwargs get passed along to subsequent solve calls.
     optimize_hook
@@ -186,7 +172,7 @@ end
 
 Return a new JuMP model without any optimizer; the model is stored the model in
 a cache. The mode of the `CachingOptimizer` storing this cache is
-`caching_mode`. The optimizer can be set later in the [`JuMP.optimize!`](@ref)
+`caching_mode`. The optimizer can be set later in the [`optimize!`](@ref)
 call. If `bridge_constraints` is true, constraints that are not supported by the
 optimizer are automatically bridged to equivalent supported constraints when
 an appropriate transformation is defined in the `MathOptInterface.Bridges`
@@ -219,7 +205,7 @@ create the optimizer. The optimizer factory can be created by the
 The following creates a model using the optimizer
 `IpoptOptimizer(print_level=0)`:
 ```julia
-model = JuMP.Model(with_optimizer(IpoptOptimizer, print_level=0))
+model = Model(with_optimizer(Ipopt.Optimizer, print_level=0))
 ```
 """
 function Model(optimizer_factory::OptimizerFactory;
@@ -243,7 +229,7 @@ in mind the following implications of creating models using this *direct* mode:
   variables/constraints after solver or modifying constraints, an error is
   thrown. With models created using the [`Model`](@ref) constructor, such
   situations can be dealt with by storing the modifications in a cache and
-  loading them into the optimizer when `JuMP.optimize!` is called.
+  loading them into the optimizer when `optimize!` is called.
 * No constraint bridging is supported by default.
 * The optimizer used cannot be changed the model is constructed.
 * The model created cannot be copied.
@@ -256,6 +242,7 @@ function direct_model(backend::MOI.ModelLike)
                  Dict{MOIVAR, MOIINT}(),
                  Dict{MOIVAR, MOIBIN}(),
                  backend,
+                 Set{Any}(),
                  nothing,
                  nothing,
                  Dict{Symbol, Any}(),
@@ -273,7 +260,7 @@ Return the lower-level MathOptInterface model that sits underneath JuMP. This
 model depends on which operating mode JuMP is in (manual, automatic, or direct),
 and whether there are any bridges in the model.
 
-If JuMP is in direct mode (i.e., the model was created using [`JuMP.direct_model`](@ref)),
+If JuMP is in direct mode (i.e., the model was created using [`direct_model`](@ref)),
 the backend with be the optimizer passed to `direct_model`. If JuMP is in manual
 or automatic mode, the backend is a `MOI.Utilities.CachingOptimizer`.
 
@@ -296,9 +283,11 @@ end
 
 Return mode (DIRECT, AUTOMATIC, MANUAL) of model.
 """
-mode(model::Model) = moi_mode(backend(model))
-# The type of backend(model) is unknown so we directly redirect to another
-# function.
+function mode(model::Model)
+    # The type of `backend(model)` is not type-stable, so we use a function
+    # barrier (`moi_mode`) to improve performance.
+    return moi_mode(backend(model))
+end
 
 # Direct mode
 moi_bridge_constraints(model::MOI.ModelLike) = false
@@ -346,10 +335,49 @@ optimizer is set and unsupported constraints are automatically bridged
 to equivalent supported constraints when an appropriate transformation is
 available.
 """
-bridge_constraints(model::Model) = moi_bridge_constraints(backend(model))
-# The type of backend(model) is unknown so we directly redirect to another
-# function.
+function bridge_constraints(model::Model)
+    # The type of `backend(model)` is not type-stable, so we use a function
+    # barrier (`moi_bridge_constraints`) to improve performance.
+    return moi_bridge_constraints(backend(model))
+end
 
+function moi_add_bridge(model::Nothing,
+                        BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+    # No optimizer is attached, the bridge will be added when one is attached
+    return
+end
+function moi_add_bridge(model::MOI.ModelLike,
+                        BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+    error("Cannot add bridge if `bridge_constraints` was set to `false` in the",
+          " `Model` constructor.")
+end
+function moi_add_bridge(bridge_opt::MOI.Bridges.LazyBridgeOptimizer,
+                        BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+    MOI.Bridges.add_bridge(bridge_opt, BridgeType{Float64})
+    return
+end
+function moi_add_bridge(caching_opt::MOIU.CachingOptimizer,
+                        BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+    moi_add_bridge(caching_opt.optimizer, BridgeType)
+    return
+end
+
+"""
+     add_bridge(model::Model,
+                BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+
+Add `BridgeType` to the list of bridges that can be used to transform
+unsupported constraints into an equivalent formulation using only constraints
+supported by the optimizer.
+"""
+function add_bridge(model::Model,
+                    BridgeType::Type{<:MOI.Bridges.AbstractBridge})
+    push!(model.bridge_types, BridgeType)
+    # The type of `backend(model)` is not type-stable, so we use a function
+    # barrier (`moi_add_bridge`) to improve performance.
+    moi_add_bridge(JuMP.backend(model), BridgeType)
+    return
+end
 
 """
     num_variables(model::Model)
@@ -446,7 +474,7 @@ function Base.showerror(io::IO, ex::VariableNotOwnedError)
     print(io, "VariableNotOwnedError: Variable not owned by model present in $(ex.context)")
 end
 
-function verify_ownership(m::Model, vec::Vector{VariableRef})
+function check_belongs_to_model(vec::Vector{VariableRef}, m::Model)
     n = length(vec)
     @inbounds for i in 1:n
         vec[i].m !== m && return false
@@ -455,9 +483,11 @@ function verify_ownership(m::Model, vec::Vector{VariableRef})
 end
 
 Base.copy(v::VariableRef, new_model::Model) = VariableRef(new_model, v.index)
-Base.copy(x::Nothing, new_model::Model) = nothing
+Base.copy(x::Nothing, new_model::AbstractModel) = nothing
 # TODO: Replace with vectorized copy?
-Base.copy(v::AbstractArray{VariableRef}, new_model::Model) = (var -> VariableRef(new_model, var.index)).(v)
+function Base.copy(v::AbstractArray{VariableRef}, new_model::AbstractModel)
+    return (var -> VariableRef(new_model, var.index)).(v)
+end
 
 function optimizer_index(v::VariableRef)
     model = owner_model(v)
@@ -498,52 +528,88 @@ Use `has_dual` to check if a result exists before asking for values.
 See also [`shadow_price`](@ref).
 """
 function dual(cr::ConstraintRef{Model, <:MOICON})
-    reshape(MOI.get(cr.model, MOI.ConstraintDual(), cr), dual_shape(cr.shape))
+    return reshape(MOI.get(cr.model, MOI.ConstraintDual(), cr),
+                   dual_shape(cr.shape))
 end
 
 """
-    get(m::JuMP.Model, attr::MathOptInterface.AbstractModelAttribute)
+    struct OptimizeNotCalled <: Exception end
 
-Return the value of the attribute `attr` from model's MOI backend.
+A result attribute cannot be queried before [`optimize!`](@ref) is called.
 """
-MOI.get(m::Model, attr::MOI.AbstractModelAttribute) = MOI.get(backend(m), attr)
-function MOI.get(m::Model, attr::MOI.AbstractVariableAttribute, v::VariableRef)
-    @assert m === owner_model(v) # TODO: Improve the error message.
-    MOI.get(backend(m), attr, index(v))
+struct OptimizeNotCalled <: Exception end
+
+# Throws an error if `optimize!` has not been called, i.e., if there is no
+# optimizer attached or if the termination statis is `MOI.OPTIMIZE_NOT_CALLED`.
+function moi_get_result(model::MOI.ModelLike, args...)
+    if MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
+        throw(OptimizeNotCalled())
+    end
+    return MOI.get(model, args...)
 end
-function MOI.get(m::Model, attr::MOI.AbstractConstraintAttribute, cr::ConstraintRef)
-    @assert m === cr.model # TODO: Improve the error message.
-    MOI.get(backend(m), attr, index(cr))
+function moi_get_result(model::MOIU.CachingOptimizer, args...)
+    if MOIU.state(model) == MOIU.NO_OPTIMIZER ||
+       MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
+        throw(OptimizeNotCalled())
+    end
+    return MOI.get(model, args...)
+end
+
+"""
+    get(model::Model, attr::MathOptInterface.AbstractModelAttribute)
+
+Return the value of the attribute `attr` from the model's MOI backend.
+"""
+function MOI.get(model::Model, attr::MOI.AbstractModelAttribute)
+    if MOI.is_set_by_optimize(attr) &&
+       !(attr isa MOI.TerminationStatus) && # Before `optimize!` is called, the
+       !(attr isa MOI.PrimalStatus) &&      # statuses are `OPTIMIZE_NOT_CALLED`
+       !(attr isa MOI.DualStatus)           # and `NO_SOLUTION`
+        moi_get_result(backend(model), attr)
+    else
+        MOI.get(backend(model), attr)
+    end
+end
+function MOI.get(model::Model, attr::MOI.AbstractVariableAttribute,
+                 v::VariableRef)
+    check_belongs_to_model(v, model)
+    if MOI.is_set_by_optimize(attr)
+        return moi_get_result(backend(model), attr, index(v))
+    else
+        return MOI.get(backend(model), attr, index(v))
+    end
+end
+function MOI.get(model::Model, attr::MOI.AbstractConstraintAttribute,
+                 cr::ConstraintRef)
+    check_belongs_to_model(cr, model)
+    if MOI.is_set_by_optimize(attr)
+        return moi_get_result(backend(model), attr, index(cr))
+    else
+        return MOI.get(backend(model), attr, index(cr))
+    end
 end
 
 MOI.set(m::Model, attr::MOI.AbstractModelAttribute, value) = MOI.set(backend(m), attr, value)
-function MOI.set(m::Model, attr::MOI.AbstractVariableAttribute, v::VariableRef, value)
-    @assert m === owner_model(v) # TODO: Improve the error message.
-    MOI.set(backend(m), attr, index(v), value)
+function MOI.set(model::Model, attr::MOI.AbstractVariableAttribute,
+                 v::VariableRef, value)
+    check_belongs_to_model(v, model)
+    MOI.set(backend(model), attr, index(v), value)
 end
-function MOI.set(m::Model, attr::MOI.AbstractConstraintAttribute, cr::ConstraintRef, value)
-    @assert m === cr.model # TODO: Improve the error message.
-    MOI.set(backend(m), attr, index(cr), value)
+function MOI.set(model::Model, attr::MOI.AbstractConstraintAttribute,
+                 cr::ConstraintRef, value)
+    check_belongs_to_model(cr, model)
+    MOI.set(backend(model), attr, index(cr), value)
 end
 
-###############################################################################
 # GenericAffineExpression, AffExpr, AffExprConstraint
 include("aff_expr.jl")
 
-
-
-###############################################################################
 # GenericQuadExpr, QuadExpr
 # GenericQuadConstraint, QuadConstraint
 include("quad_expr.jl")
 
-##########################################################################
-# SOSConstraint  (special ordered set constraints)
-# include("sos.jl")
-
 include("sets.jl")
 
-##########################################################################
 # SDConstraint
 include("sd.jl")
 
@@ -622,7 +688,6 @@ function operator_warn(model::Model)
     end
 end
 
-##########################################################################
 # Types used in the nonlinear code
 # TODO: rename "m" field to "model" for style compliance
 struct NonlinearExpression
@@ -635,7 +700,6 @@ struct NonlinearParameter <: AbstractJuMPScalar
     index::Int
 end
 
-##########################################################################
 include("copy.jl")
 include("Containers/Containers.jl")
 include("operators.jl")
@@ -644,6 +708,24 @@ include("optimizer_interface.jl")
 include("nlp.jl")
 include("print.jl")
 
+# JuMP exports everything except internal symbols, which are defined as those
+# whose name starts with an underscore. If you don't want all of these symbols
+# in your environment, then use `import JuMP` instead of `using JuMP`.
 
-##########################################################################
+# Do not add JuMP-defined symbols to this exclude list. Instead, rename them
+# with an underscore.
+const _EXCLUDE_SYMBOLS = [Symbol(@__MODULE__), :eval, :include]
+
+for sym in names(@__MODULE__, all=true)
+    sym_string = string(sym)
+    if sym in _EXCLUDE_SYMBOLS || startswith(sym_string, "_")
+        continue
+    end
+    if !(Base.isidentifier(sym) || (startswith(sym_string, "@") &&
+         Base.isidentifier(sym_string[2:end])))
+       continue
+    end
+    @eval export $sym
+end
+
 end

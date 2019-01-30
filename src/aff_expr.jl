@@ -261,8 +261,15 @@ Replaces `getvalue` for most use cases.
 """
 value(a::GenericAffExpr) = value(a, value)
 
+function check_belongs_to_model(a::GenericAffExpr, model::AbstractModel)
+    for variable in keys(a.terms)
+        check_belongs_to_model(variable, model)
+    end
+end
+
 # Note: No validation is performed that the variables in the AffExpr belong to
-# the same model.
+# the same model. The verification is done in `check_belongs_to_model` which
+# should be called before calling `MOI.ScalarAffineFunction`.
 function MOI.ScalarAffineFunction(a::AffExpr)
     assert_isfinite(a)
     terms = MOI.ScalarAffineTerm{Float64}[MOI.ScalarAffineTerm(t[1],
@@ -274,6 +281,7 @@ moi_function(a::GenericAffExpr) = MOI.ScalarAffineFunction(a)
 function moi_function_type(::Type{<:GenericAffExpr{T}}) where T
     return MOI.ScalarAffineFunction{T}
 end
+
 
 function AffExpr(m::Model, f::MOI.ScalarAffineFunction)
     aff = AffExpr()
@@ -330,7 +338,7 @@ end
 
 # Copy an affine expression to a new model by converting all the
 # variables to the new model's variables
-function Base.copy(a::GenericAffExpr, new_model::Model)
+function Base.copy(a::GenericAffExpr, new_model::AbstractModel)
     result = zero(a)
     for (coef, var) in linear_terms(a)
         add_to_expression!(result, coef, copy(var, new_model))

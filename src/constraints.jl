@@ -33,7 +33,7 @@ struct Polynomial
     coefficients::Vector{Float64}
     monomials::Vector{Monomial}
 end
-struct PolynomialShape <: JuMP.AbstractShape
+struct PolynomialShape <: AbstractShape
     monomials::Vector{Monomial}
 end
 JuMP.reshape(x::Vector, shape::PolynomialShape) = Polynomial(x, shape.monomials)
@@ -44,7 +44,7 @@ struct Moments
     coefficients::Vector{Float64}
     monomials::Vector{Monomial}
 end
-struct MomentsShape <: JuMP.AbstractShape
+struct MomentsShape <: AbstractShape
     monomials::Vector{Monomial}
 end
 JuMP.reshape(x::Vector, shape::MomentsShape) = Moments(x, shape.monomials)
@@ -97,13 +97,45 @@ Vector for which the vectorized form corresponds exactly to the vector given.
 struct VectorShape <: AbstractShape end
 reshape(vectorized_form, ::VectorShape) = vectorized_form
 
-##########################################################################
-# Constraint Reference
-# Holds the index of a constraint in a Model.
+"""
+    ConstraintRef
+
+Holds a reference to the model and the corresponding MOI.ConstraintIndex.
+"""
 struct ConstraintRef{M <: AbstractModel, C, Shape <: AbstractShape}
     model::M
     index::C
     shape::Shape
+end
+
+"""
+    struct ConstraintNotOwned{C <: ConstraintRef} <: Exception
+        constraint_ref::C
+    end
+
+The constraint `constraint_ref` was used in a model different to
+`owner_model(constraint_ref)`.
+"""
+struct ConstraintNotOwned{C <: ConstraintRef} <: Exception
+    constraint_ref::C
+end
+
+"""
+    owner_model(cref::ConstraintRef)
+
+Returns the model to which `cref` belongs.
+"""
+owner_model(cref::ConstraintRef) = cref.model
+
+"""
+    check_belongs_to_model(cref::ConstraintRef, model::AbstractModel)
+
+Throw `ConstraintNotOwned` if `owner_model(cref)` is not `model`.
+"""
+function check_belongs_to_model(cref::ConstraintRef, model::AbstractModel)
+    if owner_model(cref) !== model
+        throw(ConstraintNotOwned(cref))
+    end
 end
 
 Base.broadcastable(cref::ConstraintRef) = Ref(cref)
@@ -161,14 +193,14 @@ x
 julia> @constraint(model, con, x^2 == 1)
 con : x² = 1.0
 
-julia> JuMP.constraint_by_name(model, "kon")
+julia> constraint_by_name(model, "kon")
 
-julia> JuMP.constraint_by_name(model, "con")
+julia> constraint_by_name(model, "con")
 con : x² = 1.0
 
-julia> JuMP.constraint_by_name(model, "con", AffExpr, JuMP.MOI.EqualTo{Float64})
+julia> constraint_by_name(model, "con", AffExpr, MOI.EqualTo{Float64})
 
-julia> JuMP.constraint_by_name(model, "con", QuadExpr, JuMP.MOI.EqualTo{Float64})
+julia> constraint_by_name(model, "con", QuadExpr, MOI.EqualTo{Float64})
 con : x² = 1.0
 ```
 """
@@ -241,20 +273,77 @@ end
 abstract type AbstractConstraint end
 
 """
-    jump_function(constraint::JuMP.AbstractConstraint)
+    struct BridgeableConstraint{C, B} <: AbstractConstraint
+        constraint::C
+        bridge_type::B
+    end
+
+Constraint `constraint` that can be bridged by the bridge of type `bridge_type`.
+Adding this constraint to a model is equivalent to
+```julia
+add_bridge(model, bridge_type)
+add_constraint(model, constraint)
+```
+
+## Examples
+
+Given a new scalar set type `CustomSet` with a bridge `CustomBridge` that can
+bridge `F`-in-`CustomSet` constraints, when the user does
+```julia
+model = Model()
+@variable(model, x)
+@constraint(model, x + 1 in CustomSet())
+optimize!(model)
+```
+with an optimizer that does not support `F`-in-`CustomSet` constraints, the
+constraint will not be bridge unless he manually calls `add_bridge(model,
+CustomBridge)`. In order to automatically add the `CustomBridge` to any model to
+which an `F`-in-`CustomSet` is added, simply add the following method:
+```julia
+function JuMP.build_constraint(_error::Function, func::AbstractJuMPScalar,
+                               set::CustomSet)
+    constraint = ScalarConstraint(func, set)
+    return JuMP.BridgeableConstraint(constraint, CustomBridge)
+end
+
+### Note
+
+JuMP extensions should extend `JuMP.build_constraint` only if they also defined
+`CustomSet`, for three
+reasons:
+1. It is problematic if multiple extensions overload the same JuMP method.
+2. A missing method will not inform the users that they forgot to load the
+   extension module defining the `build_constraint` method.
+3. Defining a method where neither the function nor any of the argument types
+   are defined in the package is called [*type piracy*](https://docs.julialang.org/en/v1/manual/style-guide/index.html#Avoid-type-piracy-1)
+   and is discouraged in the Julia style guide.
+```
+"""
+struct BridgeableConstraint{C, B} <: AbstractConstraint
+    constraint::C
+    bridge_type::B
+end
+
+function add_constraint(model::Model, c::BridgeableConstraint, name::String="")
+    add_bridge(model, c.bridge_type)
+    return add_constraint(model, c.constraint, name)
+end
+
+"""
+    jump_function(constraint::AbstractConstraint)
 
 Return the function of the constraint `constraint` in the function-in-set form
-as a `JuMP.AbstractJuMPScalar` or `Vector{JuMP.AbstractJuMPScalar}`.
+as a `AbstractJuMPScalar` or `Vector{AbstractJuMPScalar}`.
 """
 function jump_function end
 
 """
-    moi_function(constraint::JuMP.AbstractConstraint)
+    moi_function(constraint::AbstractConstraint)
 
 Return the function of the constraint `constraint` in the function-in-set form
 as a `MathOptInterface.AbstractFunction`.
 """
-function moi_function(constraint::JuMP.AbstractConstraint)
+function moi_function(constraint::AbstractConstraint)
     return moi_function(jump_function(constraint))
 end
 
@@ -286,6 +375,9 @@ function constraint_object(ref::ConstraintRef{Model, MOICON{FuncType, SetType}})
     s = MOI.get(model, MOI.ConstraintSet(), ref)::SetType
     return ScalarConstraint(jump_function(model, f), s)
 end
+function check_belongs_to_model(c::ScalarConstraint, model)
+    check_belongs_to_model(c.func, model)
+end
 
 struct VectorConstraint{F <: AbstractJuMPScalar,
                         S <: MOI.AbstractVectorSet,
@@ -308,6 +400,11 @@ function constraint_object(ref::ConstraintRef{Model, MOICON{FuncType, SetType}})
     f = MOI.get(model, MOI.ConstraintFunction(), ref)::FuncType
     s = MOI.get(model, MOI.ConstraintSet(), ref)::SetType
     return VectorConstraint(jump_function(model, f), s, ref.shape)
+end
+function check_belongs_to_model(c::VectorConstraint, model)
+    for func in c.func
+        check_belongs_to_model(func, model)
+    end
 end
 
 function moi_add_constraint(model::MOI.ModelLike, f::MOI.AbstractFunction,
@@ -333,6 +430,7 @@ Add a constraint `c` to `Model model` and sets its name.
 function add_constraint(model::Model, c::AbstractConstraint, name::String="")
     # The type of backend(model) is unknown so we directly redirect to another
     # function.
+    check_belongs_to_model(c, model)
     cindex = moi_add_constraint(backend(model), moi_function(c), moi_set(c))
     cref = ConstraintRef(model, cindex, shape(c))
     if !isempty(name)
@@ -348,14 +446,14 @@ Set the coefficient of `variable` in the constraint `constraint` to `value`.
 
 Note that prior to this step, JuMP will aggregate multiple terms containing the
 same variable. For example, given a constraint `2x + 3x <= 2`,
-`JuMP.set_coefficient(c, x, 4)` will create the constraint `4x <= 2`.
+`set_coefficient(c, x, 4)` will create the constraint `4x <= 2`.
 
 
 ```jldoctest; setup = :(using JuMP), filter=r"≤|<="
 model = Model()
 @variable(model, x)
 @constraint(model, con, 2x + 3x <= 2)
-JuMP.set_coefficient(con, x, 4)
+set_coefficient(con, x, 4)
 con
 
 # output
@@ -370,6 +468,29 @@ function set_coefficient(constraint::ConstraintRef{Model, MOICON{F, S}},
     MOI.modify(backend(constraint.model), index(constraint),
         MOI.ScalarCoefficientChange(index(variable), convert(T, value)))
     return
+end
+
+"""
+    value(cref::ConstraintRef)
+
+Get the primal value of this constraint in the result returned by a solver. That
+is, if `cref` is the reference of a constraint `func`-in-`set`, it returns the
+value of `func` evaluated at the value of the variables (given by
+[`value(::VariableRef)`](@ref)).
+Use [`has_values`](@ref) to check if a result exists before asking for values.
+
+## Note
+
+For scalar contraints, the constant is moved to the `set` so it is not taken
+into account in the primal value of the constraint. For instance, the constraint
+`@constraint(model, 2x + 3y + 1 == 5)` is transformed into
+`2x + 3y`-in-`MOI.EqualTo(4)` so the value returned by this function is the
+evaluation of `2x + 3y`.
+```
+"""
+function value(cref::ConstraintRef{Model, <:MOICON})
+    return reshape(MOI.get(cref.model, MOI.ConstraintPrimal(), cref),
+                   cref.shape)
 end
 
 """

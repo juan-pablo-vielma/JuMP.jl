@@ -387,6 +387,30 @@
         @test JuMP.value(p) == 10.0
     end
 
+    @testset "@NLconstraints" begin
+        model = Model()
+        @variable(model, 0 <= x <= 1)
+        @variable(model, y[1:3])
+        @objective(model, Max, x)
+
+        @NLconstraints(model, begin
+            ref[i=1:3], y[i] == 0
+            x + y[1] * y[2] * y[3] <= 0.5
+        end)
+
+        @test JuMP.num_nl_constraints(model) == 4
+        evaluator = JuMP.NLPEvaluator(model)
+        MOI.initialize(evaluator, [:ExprGraph])
+
+        for i in 1:3
+            @test MOI.constraint_expr(evaluator, i) ==
+                    :(x[$(y[i].index)] - 0.0 == 0.0)
+        end
+        @test MOI.constraint_expr(evaluator, 4) ==
+               :((x[$(x.index)] + x[$(y[1].index)] * x[$(y[2].index)] *
+                  x[$(y[3].index)]) - 0.5 <= 0.0)
+    end
+
     # This covers the code that computes Hessians in odd chunks of Hess-vec
     # products.
     @testset "Dense Hessian" begin
@@ -539,8 +563,8 @@
         MOI.initialize(d, [:Grad])
         expected_exception = ErrorException(
             "Expected return type of Float64 from a user-defined function, " *
-            "but got JuMP.GenericAffExpr{Float64,VariableRef}. Make sure your" *
-            " user-defined function only depends on variables passed as " *
+            "but got GenericAffExpr{Float64,VariableRef}. Make sure your " *
+            "user-defined function only depends on variables passed as " *
             "arguments."
         )
         @test_throws expected_exception MOI.eval_objective(d, [1.0, 1.0])
@@ -571,5 +595,15 @@
         @test JuMP.value(ex1, JuMP.start_value) ≈ sin(2.0)
         @test JuMP.value(ex2, JuMP.start_value) ≈ sin(2.0) + 4.0
         @test JuMP.value(ex3, JuMP.start_value) ≈ 2.5 * sin(2.0) + 2.0
+    end
+
+    @testset "Hessians disabled with user-defined multivariate functions" begin
+        model = Model()
+        my_f(x, y) = (x - 1)^2 + (y - 2)^2
+        JuMP.register(model, :my_f, 2, my_f, autodiff = true)
+        @variable(model, x[1:2])
+        @NLobjective(model, Min, my_f(x[1], x[2]))
+        evaluator = JuMP.NLPEvaluator(model)
+        @test !(:Hess in MOI.features_available(evaluator))
     end
 end

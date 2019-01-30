@@ -6,25 +6,18 @@
 ```@meta
 # These comments do not display in the HTML output.
 # See https://github.com/JuliaDocs/Documenter.jl/issues/674.
-
-# Style conventions for the JuMP documentation:
-# - Respect the 80-character line limit whenever possible.
-# - Be concise.
-# - Use lists instead of long sentences.
-#   - Use numbered lists when describing a sequence, e.g., (1) do X, (2) then Y.
-#   - Use bullet points when the items are not ordered.
-# - Example code should be covered by doctests.
-#   - But it's unclear what to do if the code depends on a solver, see
-#     https://github.com/JuliaOpt/JuMP.jl/issues/1175.
 ```
 
 !!! warning
-    This documentation is for the development branch of JuMP. JuMP is
-    undergoing a [major
-    transition](https://discourse.julialang.org/t/mathoptinterface-and-upcoming-breaking-changes-in-jump-0-19)
+    This documentation is for the development branch of JuMP. JuMP is undergoing
+    a [major transition](https://discourse.julialang.org/t/mathoptinterface-and-upcoming-breaking-changes-in-jump-0-19)
     to MathOptInterface. The development version is beta quality and the
     documentation has TODOs remaining before the release. Please provide
     feedback and file issues if you use this branch.
+
+    The [NEWS.md](https://github.com/JuliaOpt/JuMP.jl/blob/master/NEWS.md) file
+    contains a comprehensive list of the changes between JuMP 0.18 and JuMP 0.19
+    to aid users updating their existing models.
 
 [JuMP](https://github.com/JuliaOpt/JuMP.jl) is a domain-specific modeling
 language for [mathematical
@@ -80,7 +73,7 @@ JuMP's features include:
         it can be embedded in commercial software that complies with the terms
         of the license.
 
-While neither Julia nor JuMP have reached version 1.0 yet, the releases are
+Although JuMP has not reached version 1.0 yet, the releases are
 stable enough for everyday use and are being used in a number of research
 projects and neat applications by a growing community of users who are early
 adopters. JuMP remains under active development, and we welcome your feedback,
@@ -90,21 +83,20 @@ Contents
 --------
 
 ```@contents
-Pages = ["installation.md",
+Pages = [
+    "installation.md",
     "quickstart.md",
-    "concepts.md",
     "variables.md",
     "expressions.md",
     "objective.md",
     "constraints.md",
     "containers.md",
-    "names.md",
     "solvers.md",
+    "solutions.md",
     "nlp.md",
     "style.md",
-    "extensions.md",
-    "updating.md",
-    "howdoi.md"]
+    "extensions.md"
+]
 Depth = 2
 ```
 
@@ -151,3 +143,9 @@ A preprint of this paper is [freely available](http://arxiv.org/abs/1312.1431).
 JuMP is a fiscally sponsored project of [NumFOCUS](https://numfocus.org), a
 nonprofit dedicated to supporting the open source scientific computing
 community.
+
+You can support JuMP by
+[donating](https://www.flipcause.com/secure/cause_pdetails/MzkxMDU=). JuMP's
+largest expense is the annual JuMP-dev workshop. Donations will help us provide
+travel support for JuMP-dev attendees and take advantage of other opportunities
+that arise to support JuMP development.

@@ -12,7 +12,7 @@ adopters. Additional breaking changes may occur between development tags.
 The documentation has known gaps. When using a development tag, be prepared to
 peek into the JuMP source code and tests for examples of how things work.
 
-Latest development tag: `v0.19-beta` (`] add JuMP#v0.19-beta`).
+Latest development tag: `v0.19-beta2` (`] add JuMP#v0.19-beta2`).
 
 Breaking changes:
 
@@ -25,6 +25,12 @@ Breaking changes:
   updated for MOI. See the
   [installation guide](http://www.juliaopt.org/JuMP.jl/dev/installation/)
   for a list of solvers that have and have not yet been updated.
+  
+- Most solvers have been renamed to `PackageName.Optimizer`. For example, 
+  `GurobiSolver()` is now `Gurobi.Optimizer`.
+
+- Solvers are no longer added to a model via `Model(solver = XXX(kwargs...))`. 
+  Instead use `Model(with_optimizer(XXX, kwargs...))`. For example, `Model(with_optimizer(Gurobi.Optimizer, OutputFlag=0))`.
 
 - JuMP containers (e.g., the objects returned by `@variable`) have been
   redesigned. `Containers.SparseAxisArray` replaces `JuMPDict`, `JuMPArray` was
@@ -149,6 +155,12 @@ release (0.19.x or later):
 
 - We do not yet have an implementation of solver-specific callbacks.
 
+- The column generation syntax in `@variable` has been removed (i.e., the
+  `objective`, `coefficients`, and `inconstraints` keyword arguments). Support 
+  for column generation will be re-introduced in a future release.
+
+- The ability to solve the continuous relaxation (i.e. via 
+  `solve(model; relaxation = true)`) is not yet reimplemented ([issue](https://github.com/JuliaOpt/JuMP.jl/issues/1611)).
 
 Version 0.18.5 (December 1, 2018)
 ---------------------------------

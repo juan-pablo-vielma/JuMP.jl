@@ -113,10 +113,42 @@ julia> model = Model()
 
 julia> x = @variable(model)
 
-julia> JuMP.owner_model(x) === model
+julia> owner_model(x) === model
 true
+```
 """
 owner_model(v::AbstractVariableRef) = v.model
+
+"""
+    struct VariableNotOwned{V <: AbstractVariableRef} <: Exception
+        variable::V
+    end
+
+The variable `variable` was used in a model different to
+`owner_model(variable)`.
+"""
+struct VariableNotOwned{V <: AbstractVariableRef} <: Exception
+    variable::V
+end
+
+"""
+    check_belongs_to_model(func::AbstractJuMPScalar, model::AbstractModel)
+
+Throw `VariableNotOwned` if the `owner_model` of one of the variables of the
+function `func` is not `model`.
+
+    check_belongs_to_model(constraint::AbstractConstraint, model::AbstractModel)
+
+Throw `VariableNotOwned` if the `owner_model` of one of the variables of the
+constraint `constraint` is not `model`.
+"""
+function check_belongs_to_model end
+
+function check_belongs_to_model(v::AbstractVariableRef, model::AbstractModel)
+    if owner_model(v) !== model
+        throw(VariableNotOwned(v))
+    end
+end
 
 Base.iszero(::VariableRef) = false
 Base.copy(v::VariableRef) = VariableRef(v.model, v.index)
@@ -156,47 +188,6 @@ end
 function Base.isequal(v1::VariableRef, v2::VariableRef)
     return owner_model(v1) === owner_model(v2) && v1.index == v2.index
 end
-
-
-"""
-    VariableToValueMap{T}
-
-An object for storing a mapping from variables to a value of type `T`.
-"""
-struct VariableToValueMap{T}
-    model::Model
-    d::Dict{MOIVAR,T}
-end
-
-function VariableToValueMap{T}(m::Model) where T
-    return VariableToValueMap{T}(m, Dict{MOIVAR,T}())
-end
-
-function Base.getindex(vm::VariableToValueMap, v::VariableRef)
-    @assert owner_model(v) === vm.model # TODO: better error message
-    return vm.d[index(v)]
-end
-
-function Base.setindex!(vm::VariableToValueMap{T}, value::T, v::VariableRef) where T
-    @assert owner_model(v) === vm.model # TODO: better error message
-    vm.d[index(v)] = value
-end
-
-Base.setindex!(vm::VariableToValueMap{T}, value, v::VariableRef) where T = setindex!(vm, convert(T, value), v)
-
-function Base.delete!(vm::VariableToValueMap,v::VariableRef)
-    delete!(vm.d, index(v))
-    vm
-end
-
-Base.empty!(vm::VariableToValueMap) = empty!(vm.d)
-Base.isempty(vm::VariableToValueMap) = isempty(vm.d)
-
-function Base.haskey(vm::VariableToValueMap, v::VariableRef)
-    return (vm.model === owner_model(v)) && haskey(vm.d, index(v))
-end
-
-
 
 index(v::VariableRef) = v.index
 
@@ -243,13 +234,13 @@ Solver name: No optimizer attached.
 julia> @variable(model, x)
 x
 
-julia> JuMP.variable_by_name(model, "x")
+julia> variable_by_name(model, "x")
 x
 
 julia> @variable(model, base_name="x")
 x
 
-julia> JuMP.variable_by_name(model, "x")
+julia> variable_by_name(model, "x")
 ERROR: Multiple variables have the name x.
 Stacktrace:
  [1] error(::String) at ./error.jl:33
@@ -262,14 +253,14 @@ Stacktrace:
 julia> var = @variable(model, base_name="y")
 y
 
-julia> JuMP.variable_by_name(model, "y")
+julia> variable_by_name(model, "y")
 y
 
-julia> JuMP.set_name(var, "z")
+julia> set_name(var, "z")
 
-julia> JuMP.variable_by_name(model, "y")
+julia> variable_by_name(model, "y")
 
-julia> JuMP.variable_by_name(model, "z")
+julia> variable_by_name(model, "z")
 z
 
 julia> @variable(model, u[1:2])
@@ -277,7 +268,7 @@ julia> @variable(model, u[1:2])
  u[1]
  u[2]
 
-julia> JuMP.variable_by_name(model, "u[2]")
+julia> variable_by_name(model, "u[2]")
 u[2]
 ```
 """
@@ -298,7 +289,6 @@ function moi_function_type(::Type{<:AbstractVariableRef})
     return MOI.SingleVariable
 end
 
-
 # Note: No validation is performed that the variables belong to the same model.
 MOI.VectorOfVariables(vars::Vector{VariableRef}) = MOI.VectorOfVariables(index.(vars))
 function moi_function(variables::Vector{<:AbstractVariableRef})
@@ -318,6 +308,12 @@ end
 
 # lower bounds
 
+"""
+    has_lower_bound(v::VariableRef)
+
+Return `true` if `v` has a lower bound. If `true`, the lower bound can be
+queried with [`lower_bound`](@ref). See also [`LowerBoundRef`](@ref).
+"""
 function has_lower_bound(v::VariableRef)
     return haskey(owner_model(v).variable_to_lower_bound, index(v))
 end
@@ -333,23 +329,24 @@ function set_lower_bound_index(v::VariableRef, cindex::MOILB)
 end
 
 """
-    set_lower_bound(v::VariableRef,lower::Number)
+    set_lower_bound(v::VariableRef, lower::Number)
 
-Set the lower bound of a variable. If one does not exist, create a new lower bound constraint.
+Set the lower bound of a variable. If one does not exist, create a new lower
+bound constraint. See also [`delete_lower_bound`](@ref).
 """
-function set_lower_bound(v::VariableRef,lower::Number)
-    newset = MOI.GreaterThan(convert(Float64,lower))
+function set_lower_bound(v::VariableRef, lower::Number)
+    newset = MOI.GreaterThan(convert(Float64, lower))
     # do we have a lower bound already?
     if has_lower_bound(v)
         cindex = lower_bound_index(v)
         MOI.set(backend(owner_model(v)), MOI.ConstraintSet(), cindex, newset)
     else
         @assert !is_fixed(v)
-        cindex = MOI.add_constraint(backend(owner_model(v)),
-                                    MOI.SingleVariable(index(v)), newset)
+        cindex = MOI.add_constraint(
+            backend(owner_model(v)), MOI.SingleVariable(index(v)), newset)
         set_lower_bound_index(v, cindex)
     end
-    nothing
+    return
 end
 
 """
@@ -379,7 +376,8 @@ end
 """
     lower_bound(v::VariableRef)
 
-Return the lower bound of a variable. Error if one does not exist.
+Return the lower bound of a variable. Error if one does not exist. See also
+[`has_lower_bound`](@ref).
 """
 function lower_bound(v::VariableRef)
     cset = MOI.get(owner_model(v), MOI.ConstraintSet(),
@@ -389,6 +387,12 @@ end
 
 # upper bounds
 
+"""
+    has_upper_bound(v::VariableRef)
+
+Return `true` if `v` has a upper bound. If `true`, the upper bound can be
+queried with [`upper_bound`](@ref). See also [`UpperBoundRef`](@ref).
+"""
 function has_upper_bound(v::VariableRef)
     return haskey(owner_model(v).variable_to_upper_bound, index(v))
 end
@@ -406,9 +410,10 @@ end
 """
     set_upper_bound(v::VariableRef,upper::Number)
 
-Set the upper bound of a variable. If one does not exist, create an upper bound constraint.
+Set the upper bound of a variable. If one does not exist, create an upper bound
+constraint. See also [`delete_upper_bound`](@ref).
 """
-function set_upper_bound(v::VariableRef,upper::Number)
+function set_upper_bound(v::VariableRef, upper::Number)
     newset = MOI.LessThan(convert(Float64,upper))
     # do we have an upper bound already?
     if has_upper_bound(v)
@@ -420,7 +425,7 @@ function set_upper_bound(v::VariableRef,upper::Number)
                                     MOI.SingleVariable(index(v)), newset)
         set_upper_bound_index(v, cindex)
     end
-    nothing
+    return
 end
 
 """
@@ -450,7 +455,8 @@ end
 """
     upper_bound(v::VariableRef)
 
-Return the upper bound of a variable. Error if one does not exist.
+Return the upper bound of a variable. Error if one does not exist. See also
+[`has_upper_bound`](@ref).
 """
 function upper_bound(v::VariableRef)
     cset = MOI.get(owner_model(v), MOI.ConstraintSet(),
@@ -460,6 +466,12 @@ end
 
 # fixed value
 
+"""
+    is_fixed(v::VariableRef)
+
+Return `true` if `v` is a fixed variable. If `true`, the fixed value can be
+queried with [`fix_value`](@ref). See also [`FixRef`](@ref).
+"""
 is_fixed(v::VariableRef) = haskey(owner_model(v).variable_to_fix, index(v))
 
 function fix_index(v::VariableRef)
@@ -474,12 +486,12 @@ end
     fix(v::VariableRef, value::Number; force::Bool = false)
 
 Fix a variable to a value. Update the fixing constraint if one exists, otherwise
-create a new one.
+create a new one. See also [`unfix`](@ref).
 
 If the variable already has variable bounds and `force=false`, calling `fix`
 will throw an error. If `force=true`, existing variable bounds will be deleted,
 and the fixing constraint will be added. Note a variable will have no bounds
-after a call to `JuMP.unfix`.
+after a call to [`unfix`](@ref).
 """
 function fix(variable::VariableRef, value::Number; force::Bool = false)
     new_set = MOI.EqualTo(convert(Float64, value))
@@ -523,7 +535,8 @@ end
 """
     fix_value(v::VariableRef)
 
-Return the value to which a variable is fixed. Error if one does not exist.
+Return the value to which a variable is fixed. Error if one does not exist. See
+also [`is_fixed`](@ref).
 """
 function fix_value(v::VariableRef)
     cset = MOI.get(owner_model(v), MOI.ConstraintSet(), FixRef(v))::MOI.EqualTo
@@ -531,7 +544,7 @@ function fix_value(v::VariableRef)
 end
 
 """
-    LowerBoundRef(v::VariableRef)
+    FixRef(v::VariableRef)
 
 Return a constraint reference to the constraint fixing the value of `v`. Errors
 if one does not exist.
@@ -542,10 +555,14 @@ function FixRef(v::VariableRef)
                                                      ScalarShape())
 end
 
-# integer and binary constraints
+"""
+    is_integer(v::VariableRef)
 
+Return `true` if `v` is constrained to be integer. See also
+[`IntegerRef`](@ref).
+"""
 function is_integer(v::VariableRef)
-    return haskey(owner_model(v).variable_to_integrality,index(v))
+    return haskey(owner_model(v).variable_to_integrality, index(v))
 end
 
 function integer_index(v::VariableRef)
@@ -559,7 +576,8 @@ end
 """
     set_integer(variable_ref::VariableRef)
 
-Add an integrality constraint on the variable `variable_ref`.
+Add an integrality constraint on the variable `variable_ref`. See also
+[`unset_integer`](@ref).
 """
 function set_integer(variable_ref::VariableRef)
     if is_integer(variable_ref)
@@ -575,6 +593,11 @@ function set_integer(variable_ref::VariableRef)
     return
 end
 
+"""
+    unset_integer(variable_ref::VariableRef)
+
+Remove the integrality constraint on the variable `variable_ref`.
+"""
 function unset_integer(variable_ref::VariableRef)
     JuMP.delete(owner_model(variable_ref), IntegerRef(variable_ref))
     delete!(owner_model(variable_ref).variable_to_integrality,
@@ -582,14 +605,24 @@ function unset_integer(variable_ref::VariableRef)
     return
 end
 
+"""
+    IntegerRef(v::VariableRef)
+
+Return a constraint reference to the constraint constrainting `v` to be integer.
+Errors if one does not exist.
+"""
 function IntegerRef(v::VariableRef)
-    return ConstraintRef{Model, MOIINT, ScalarShape}(owner_model(v),
-                                                     integer_index(v),
-                                                     ScalarShape())
+    return ConstraintRef{Model, MOIINT, ScalarShape}(
+        owner_model(v), integer_index(v), ScalarShape())
 end
 
+"""
+    is_binary(v::VariableRef)
+
+Return `true` if `v` is constrained to be binary. See also [`BinaryRef`](@ref).
+"""
 function is_binary(v::VariableRef)
-    return haskey(owner_model(v).variable_to_zero_one,index(v))
+    return haskey(owner_model(v).variable_to_zero_one, index(v))
 end
 
 function binary_index(v::VariableRef)
@@ -603,7 +636,8 @@ end
 """
     set_binary(v::VariableRef)
 
-Add a constraint on the variable `v` that it must take values in the set ``\\{0,1\\}``.
+Add a constraint on the variable `v` that it must take values in the set
+``\\{0,1\\}``. See also [`unset_binary`](@ref).
 """
 function set_binary(variable_ref::VariableRef)
     if is_binary(variable_ref)
@@ -619,42 +653,62 @@ function set_binary(variable_ref::VariableRef)
     return
 end
 
+"""
+    unset_binary(variable_ref::VariableRef)
+
+Remove the binary constraint on the variable `variable_ref`.
+"""
 function unset_binary(variable_ref::VariableRef)
     JuMP.delete(owner_model(variable_ref), BinaryRef(variable_ref))
     delete!(owner_model(variable_ref).variable_to_zero_one, index(variable_ref))
     return
 end
 
+"""
+    BinaryRef(v::VariableRef)
+
+Return a constraint reference to the constraint constrainting `v` to be binary.
+Errors if one does not exist.
+"""
 function BinaryRef(v::VariableRef)
-    return ConstraintRef{Model, MOIBIN, ScalarShape}(owner_model(v),
-                                                     binary_index(v),
-                                                     ScalarShape())
+    return ConstraintRef{Model, MOIBIN, ScalarShape}(
+        owner_model(v), binary_index(v), ScalarShape())
 end
 
+"""
+    start_value(v::VariableRef)
 
+Return the start value (MOI attribute `VariablePrimalStart`) of the variable
+`v`. See also [`set_start_value`](@ref).
+"""
 function start_value(v::VariableRef)
     return MOI.get(owner_model(v), MOI.VariablePrimalStart(), v)
 end
-function set_start_value(v::VariableRef, val::Number)
-    return MOI.set(owner_model(v), MOI.VariablePrimalStart(), v, val)
+
+
+"""
+    set_start_value(variable::VariableRef, value::Number)
+
+Set the start value (MOI attribute `VariablePrimalStart`) of the variable `v` to
+`value`.
+"""
+function set_start_value(variable::VariableRef, value::Number)
+    return MOI.set(owner_model(variable), MOI.VariablePrimalStart(), variable, value)
 end
 
 """
     value(v::VariableRef)
 
-Get the value of this variable in the result returned by a solver.
-Use `has_values` to check if a result exists before asking for values.
-Replaces `getvalue` for most use cases.
+Get the value of this variable in the result returned by a solver. Use
+[`has_values`](@ref) to check if a result exists before asking for values.
 """
 value(v::VariableRef) = MOI.get(owner_model(v), MOI.VariablePrimal(), v)
 
 """
     has_values(model::Model)
 
-Return true if the solver has a primal solution available to query, otherwise
-return false.
-
-See also [`value`](@ref).
+Return `true` if the solver has a primal solution available to query, otherwise
+return `false`. See also [`value`](@ref).
 """
 has_values(model::Model) = primal_status(model) != MOI.NO_SOLUTION
 
@@ -692,4 +746,29 @@ function add_variable(m::Model, v::ScalarVariable, name::String="")
         set_name(vref, name)
     end
     return vref
+end
+
+"""
+    all_variables(model::Model)::Vector{VariableRef}
+
+Returns a list of all variables currently in the model. The variables are
+ordered by creation time.
+
+# Example
+```jldoctest
+model = Model()
+@variable(model, x)
+@variable(model, y)
+all_variables(model)
+
+# output
+
+2-element Array{VariableRef,1}:
+ x
+ y
+```
+"""
+function all_variables(model::Model)
+    return VariableRef[VariableRef(model, idx) for idx in
+                        MOI.get(model, MOI.ListOfVariableIndices())]
 end

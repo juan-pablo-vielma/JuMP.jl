@@ -14,7 +14,6 @@ function set_objective(m::Model, sense::MOI.OptimizationSense,
     initNLP(m)
     set_objective_sense(m, sense)
     m.nlp_data.nlobj = ex
-    # TODO: what do we do about existing objectives in the MOI backend?
     return
 end
 
@@ -71,6 +70,20 @@ mutable struct NLPData
     evaluator
 end
 
+"""
+    nlp_objective_function(model::Model)
+
+Returns the nonlinear objective function or `nothing` if no nonlinear objective
+function is set.
+"""
+function nlp_objective_function(model::Model)
+    if model.nlp_data === nothing
+        return nothing
+    else
+        return model.nlp_data.nlobj
+    end
+end
+
 function create_nlp_block_data(m::Model)
     @assert m.nlp_data !== nothing
     bounds = MOI.NLPBoundsPair[]
@@ -103,7 +116,7 @@ Return the current value stored in the nonlinear parameter `p`.
 ```jldoctest
 model = Model()
 @NLparameter(model, p == 10)
-JuMP.value(p)
+value(p)
 
 # output
 10.0
@@ -120,8 +133,8 @@ Store the value `v` in the nonlinear parameter `p`.
 ```jldoctest
 model = Model()
 @NLparameter(model, p == 0)
-JuMP.set_value(p, 5)
-JuMP.value(p)
+set_value(p, 5)
+value(p)
 
 # output
 5.0
@@ -297,21 +310,6 @@ end
 function MOI.initialize(d::NLPEvaluator, requested_features::Vector{Symbol})
     nldata::NLPData = d.m.nlp_data
 
-    # Check if we have any user-defined operators, in which case we need to
-    # disable hessians. The result of features_available depends on this.
-    has_nlobj = nldata.nlobj !== nothing
-    has_user_mv_operator = false
-    for nlexpr in nldata.nlexpr
-        has_user_mv_operator |= Derivatives.has_user_multivariate_operators(nlexpr.nd)
-    end
-    if has_nlobj
-        has_user_mv_operator |= Derivatives.has_user_multivariate_operators(nldata.nlobj.nd)
-    end
-    for nlconstr in nldata.nlconstr
-        has_user_mv_operator |= Derivatives.has_user_multivariate_operators(nlconstr.terms.nd)
-    end
-    d.disable_2ndorder = has_user_mv_operator
-
     for feat in requested_features
         if !(feat in MOI.features_available(d))
             error("Unsupported feature $feat")
@@ -452,11 +450,34 @@ function MOI.initialize(d::NLPEvaluator, requested_features::Vector{Symbol})
     nothing
 end
 
+function recompute_disable_2ndorder(evaluator::NLPEvaluator)
+    # Check if we have any user-defined operators, in which case we need to
+    # disable hessians. The result of features_available depends on this.
+    nldata::NLPData = evaluator.m.nlp_data
+    has_nlobj = nldata.nlobj !== nothing
+    has_user_mv_operator = false
+    for nlexpr in nldata.nlexpr
+        has_user_mv_operator |= Derivatives.
+            has_user_multivariate_operators(nlexpr.nd)
+    end
+    if has_nlobj
+        has_user_mv_operator |= Derivatives.
+            has_user_multivariate_operators(nldata.nlobj.nd)
+    end
+    for nlconstr in nldata.nlconstr
+        has_user_mv_operator |= Derivatives.
+            has_user_multivariate_operators(nlconstr.terms.nd)
+    end
+    evaluator.disable_2ndorder = has_user_mv_operator
+    return
+end
+
 function MOI.features_available(d::NLPEvaluator)
+    recompute_disable_2ndorder(d)
     features = [:Grad, :Jac, :ExprGraph]
     if !d.disable_2ndorder
-        push!(features,:Hess)
-        push!(features,:HessVec)
+        push!(features, :Hess)
+        push!(features, :HessVec)
     end
     return features
 end
@@ -728,19 +749,19 @@ end
 
 function hessian_slice_inner(d, ex, R, input_ϵ, output_ϵ, ::Type{Val{CHUNK}}) where CHUNK
 
-    subexpr_forward_values_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.subexpression_forward_values_ϵ)
-    subexpr_reverse_values_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.subexpression_reverse_values_ϵ)
-    forward_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.forward_storage_ϵ)
-    reverse_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.reverse_storage_ϵ)
-    partials_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.partials_storage_ϵ)
+    subexpr_forward_values_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.subexpression_forward_values_ϵ)
+    subexpr_reverse_values_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.subexpression_reverse_values_ϵ)
+    forward_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.forward_storage_ϵ)
+    reverse_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.reverse_storage_ϵ)
+    partials_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},d.partials_storage_ϵ)
     zero_ϵ = zero(ForwardDiff.Partials{CHUNK,Float64})
 
     user_operators = d.m.nlp_data.user_operators::Derivatives.UserOperatorRegistry
     # do a forward pass
     for expridx in ex.dependent_subexpressions
         subexpr = d.subexpressions[expridx]
-        sub_forward_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.forward_storage_ϵ)
-        sub_partials_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.partials_storage_ϵ)
+        sub_forward_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.forward_storage_ϵ)
+        sub_partials_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.partials_storage_ϵ)
         subexpr_forward_values_ϵ[expridx] = forward_eval_ϵ(subexpr.forward_storage, sub_forward_storage_ϵ, subexpr.partials_storage, sub_partials_storage_ϵ, subexpr.nd, subexpr.adj, input_ϵ, subexpr_forward_values_ϵ, user_operators)
     end
     forward_eval_ϵ(ex.forward_storage, forward_storage_ϵ, ex.partials_storage,
@@ -757,8 +778,8 @@ function hessian_slice_inner(d, ex, R, input_ϵ, output_ϵ, ::Type{Val{CHUNK}}) 
     for i in length(ex.dependent_subexpressions):-1:1
         expridx = ex.dependent_subexpressions[i]
         subexpr = d.subexpressions[expridx]
-        sub_reverse_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.reverse_storage_ϵ)
-        sub_partials_storage_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.partials_storage_ϵ)
+        sub_reverse_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.reverse_storage_ϵ)
+        sub_partials_storage_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64},subexpr.partials_storage_ϵ)
         reverse_eval_ϵ(output_ϵ, subexpr.reverse_storage, sub_reverse_storage_ϵ,subexpr.partials_storage,sub_partials_storage_ϵ,subexpr.nd,subexpr.adj,d.subexpression_reverse_values,subexpr_reverse_values_ϵ,d.subexpression_reverse_values[expridx],subexpr_reverse_values_ϵ[expridx])
     end
 end
@@ -778,8 +799,8 @@ function hessian_slice(d, ex, x, H, scale, nzcount, recovery_tmp_storage,::Type{
 
     input_ϵ_raw = d.input_ϵ
     output_ϵ_raw = d.output_ϵ
-    input_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64}, input_ϵ_raw)
-    output_ϵ = reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64}, output_ϵ_raw)
+    input_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64}, input_ϵ_raw)
+    output_ϵ = _reinterpret_unsafe(ForwardDiff.Partials{CHUNK,Float64}, output_ϵ_raw)
 
 
     # compute hessian-vector products
@@ -844,9 +865,9 @@ function hessian_slice(d, ex, x, H, scale, nzcount, recovery_tmp_storage,::Type{
     # Output is in R, now recover
 
     #output_slice = view(H, (nzcount+1):(nzcount+nzthis))
-    output_slice = VectorView(nzcount, nzthis, pointer(H))
+    output_slice = _VectorView(nzcount, nzthis, pointer(H))
     Coloring.recover_from_matmat!(output_slice, R, ex.rinfo, recovery_tmp_storage)
-    rmul!(output_slice, scale)
+    _rmul!(output_slice, scale)
     return nzthis
 
 end
@@ -1088,6 +1109,13 @@ function value(ex::NonlinearExpression, var_value::Function)
                         variable_values, subexpr_values, user_input_buffer,
                         user_output_buffer, nlp_data.user_operators)
 end
+
+"""
+    value(ex::NonlinearExpression)
+
+Evaluate `ex` using `value` as the value for each variable `v`.
+"""
+value(ex::NonlinearExpression) = value(ex, value)
 
 mutable struct UserFunctionEvaluator <: MOI.AbstractNLPEvaluator
     f

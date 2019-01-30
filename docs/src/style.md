@@ -1,8 +1,6 @@
-Style guide and design principles
-=================================
+# Style guide and design principles
 
-Style guide
------------
+## Style guide
 
 This section describes the coding style rules that apply to JuMP code and that
 we recommend for JuMP models and surrounding Julia code. The motivations for
@@ -36,6 +34,25 @@ Julia unfortunately does not have an autoformatting tool like
 autoformatting tool is available, we adopt the following conventions.
 
 #### Whitespace
+
+For conciseness, never use more than one blank line within a function, and never
+begin a function with a blank line.
+
+Bad:
+```julia
+function foo(x)
+    y = 2 * x
+
+
+    return y
+end
+
+function foo(x)
+
+    y = 2 * x
+    return y
+end
+```
 
 Julia is mostly insensitive to whitespace characters within lines.
 For consistency:
@@ -112,6 +129,39 @@ Bad:
 2(x + 1)
 ```
 
+#### Return statements
+
+To avoid situations in which it is unclear whether the author intended to return
+a certain value or not, always use an explicit `return` statement to exit from a
+function. If the return from a function is `nothing`, use `return` instead of
+`return nothing`.
+
+We make an exception for assignment-form one-line functions (`f(x) = 2x`).
+
+Good:
+```julia
+foo(x) = 2x  # Acceptable if one line
+function foo(x)
+    return 2x
+end
+function foo(x)
+    x[1] += 1
+    return
+end
+```
+
+Bad:
+```julia
+function foo(x)
+    2x
+end
+function foo(x)
+    x[1] += 1
+    return nothing
+end
+```
+
+
 #### TODO: Line breaks
 
 ### Syntax
@@ -131,8 +181,96 @@ empty vector with element type `T`. Prefer `T[]` because it is more concise.
 
 #### Trailing periods in floating-point constants
 
-Both `1.0` and `1.` create a `Float64` with value `1.0`. Prefer `1.0` over
-`1.` because it is more easily distinguished from the integer constant `1`.
+Both `1.0` and `1.` create a `Float64` with value `1.0`. Prefer `1.0` over `1.`
+because it is more easily distinguished from the integer constant `1`.
+
+Moreover, as recommended by the [Julia style guide](https://docs.julialang.org/en/v1/manual/style-guide/index.html#Avoid-using-floats-for-numeric-literals-in-generic-code-when-possible-1),
+never use `1.0` when `1` is okay.
+
+#### Comments
+
+For non-native speakers and for general clarity, comments in code must be proper
+English sentences with appropriate punctuation.
+
+Good:
+```julia
+# This is a comment demonstrating a good comment.
+```
+
+Bad:
+```julia
+# a bad comment
+```
+
+#### JuMP macro syntax
+
+For consistency, always use parentheses.
+
+Good:
+```julia
+@variable(model, x >= 0)
+```
+
+Bad:
+```julia
+@variable model x >= 0
+```
+
+For consistency, always use `constant * variable` as opposed to
+`variable * constant`. This makes it easier to read models in
+ambiguous cases like `a * x`.
+
+Good:
+```julia
+a = 4
+@constraint(model, 3 * x <= 1)
+@constraint(model, a * x <= 1)
+```
+
+Bad:
+```julia
+a = 4
+@constraint(model, x * 3 <= 1)
+@constraint(model, x * a <= 1)
+```
+
+In order to reduce boilerplate code, prefer the plural form of macros over lots
+of repeated calls to singular forms.
+
+Good:
+```julia
+@variables(model, begin
+    x >= 0
+    y >= 1
+    z <= 2
+end)
+```
+
+Bad:
+```julia
+@variable(model, x >= 0)
+@variable(model, y >= 1)
+@variable(model, z <= 2)
+```
+
+An exception is made for calls with many keyword arguments, since these need to
+be enclosed in parentheses in order to parse properly.
+
+Acceptable:
+```julia
+@variable(model, x >= 0, start = 0.0, base_name = "my_x")
+@variable(model, y >= 1, start = 2.0)
+@variable(model, z <= 2, start = -1.0)
+```
+
+Also acceptable:
+```julia
+@variables(model, begin
+    x >= 0, (start = 0.0, base_name = "my_x")
+    y >= 1, (start = 2.0)
+    z <= 2, (start = -1.0)
+end)
+```
 
 ### Naming
 
@@ -146,7 +284,35 @@ some_local_variable = ...
 some_file.jl # Except for ModuleName.jl.
 ```
 
-#### Use of underscores
+#### Exported and non-exported names
+
+Begin private module level functions and constants with an underscore. All other
+objects in the scope of a module should be exported. (See JuMP.jl for an example
+of how to do this.)
+
+Names beginning with an underscore should only be used for distinguishing
+between exported (public) and non-exported (private) objects. Therefore, never
+begin the name of a local variable with an underscore.
+
+```julia
+module MyModule
+
+export public_function, PUBLIC_CONSTANT
+
+function _private_function()
+    local_variable = 1
+    return
+end
+
+function public_function end
+
+const _PRIVATE_CONSTANT = 3.14159
+const PUBLIC_CONSTANT = 1.41421
+
+end
+```
+
+#### Use of underscores within names
 
 The Julia style guide recommends avoiding underscores "when readable", for
 example, `haskey`, `isequal`, `remotecall`, and `remotecall_fetch`. This
@@ -240,10 +406,49 @@ Use strings to provide long-form additional information like error messages.
 Use of `Symbol` should typically be reserved for identifiers, e.g., for lookup
 in the JuMP model (`model[:my_variable]`).
 
+#### `using` vs. `import`
 
+`using ModuleName` brings all symbols exported by the module `ModuleName`
+into scope, while `import ModuleName` brings only the module itself into scope.
+(See the Julia
+[manual](https://docs.julialang.org/en/v1/manual/modules/#modules-1)) for
+examples and more details.
 
-Design principles
------------------
+For the same reason that `from <module> import *` is not recommended in python
+([PEP 8](https://www.python.org/dev/peps/pep-0008/#imports)), avoid
+`using ModuleName` except in throw-away scripts or at the REPL. The `using`
+statement makes it harder to track where symbols come from and exposes the code
+to ambiguities when two modules export the same symbol.
+
+Prefer `using ModuleName: x, p` to `import ModuleName.x, ModuleName.p` and
+`import MyModule: x, p` because the `import` versions allow method extension
+without qualifying with the module name.
+
+## Documentation
+
+This section describes the writing style that should be used when writing
+documentation for JuMP (and supporting packages).
+
+We can recommend the documentation style guides by [Divio](https://www.divio.com/blog/documentation/),
+[Google](https://developers.google.com/style/), and [Write the Docs](https://www.writethedocs.org/guide/)
+as general reading for those writing documentation. This guide delegates a 
+thorough handling of the topic to those guides and instead elaborates on the 
+more Julia-specific points.
+
+ - Be concise.
+ - Use lists instead of long sentences.
+ - Use numbered lists when describing a sequence, e.g., (1) do X, (2) then Y.
+ - Use bullet points when the items are not ordered.
+ - Example code should be covered by doctests. (But it's [unclear what to do](https://github.com/JuliaOpt/JuMP.jl/issues/1175)
+   if the code depends on a solver.)
+ - When a word is a Julia symbol and not an English word, enclose it with
+   backticks. In addition, if it has a docstring in this doc add a link using 
+   `@ref`. If it is a plural, add the "s" after the closing backtick. For example,
+   ```
+   [`VariableRef`](@ref)s
+   ```
+
+## Design principles
 
 TODO: How to structure and test large JuMP models, libraries that use JuMP.
 

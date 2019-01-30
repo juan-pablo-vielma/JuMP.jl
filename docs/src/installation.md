@@ -5,9 +5,8 @@ JuMP is a package for [Julia](https://julialang.org). To use JuMP, first
 [download and install](https://julialang.org/downloads/) Julia or open up
 a remote notebook at [JuliaBox](https://www.juliabox.com/) or similar services.
 
-JuMP is compatible with both Julia 1.0 and 0.6. The compatibility with 0.6 is
-intended to facilitate upgrading from previous JuMP and Julia releases.
-The following instructions assume Julia 1.0.
+This version of JuMP is compatible with Julia 0.7 and later.
+The following instructions are based on Julia 1.0.
 
 From Julia, JuMP is installed by using the built-in package manager:
 ```julia
@@ -46,7 +45,7 @@ is often more complex. We list below the currently available solvers.
 | [CSDP](https://projects.coin-or.org/Csdp/)                                     | [CSDP.jl](https://github.com/JuliaOpt/CSDP.jl)                                   | EPL     | LP, SDP                     |
 | [ECOS](https://github.com/ifa-ethz/ecos)                                       | [ECOS.jl](https://github.com/JuliaOpt/ECOS.jl)                                   | GPL     | LP, SOCP                    |
 | [FICO Xpress](http://www.fico.com/en/products/fico-xpress-optimization-suite)  | [Xpress.jl](https://github.com/JuliaOpt/Xpress.jl)                               | Comm.   | LP, MILP, SOCP, MISOCP      |
-| [GLPK](http://www.gnu.org/software/glpk/)                                      | [GLPK](https://github.com/JuliaOpt/GLPK.jl)                                      | GPL     | LP, MILP                    |
+| [GLPK](http://www.gnu.org/software/glpk/)                                      | [GLPK.jl](https://github.com/JuliaOpt/GLPK.jl)                                   | GPL     | LP, MILP                    |
 | [Gurobi](http://gurobi.com)                                                    | [Gurobi.jl](https://github.com/JuliaOpt/Gurobi.jl)                               | Comm.   | LP, MILP, SOCP, MISOCP      |
 | [Ipopt](https://projects.coin-or.org/Ipopt)                                    | [Ipopt.jl](https://github.com/JuliaOpt/Ipopt.jl)                                 | EPL     | LP, QP, NLP                 |
 | [MOSEK](http://www.mosek.com/)                                                 | [MathOptInterfaceMosek.jl](https://github.com/JuliaOpt/MathOptInterfaceMosek.jl) | Comm.   | LP, MILP, SOCP, MISOCP, SDP |

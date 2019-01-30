@@ -4,7 +4,7 @@
 #  file, You can obtain one at http://mozilla.org/MPL/2.0/.
 #############################################################################
 # JuMP
-# An algebraic modeling langauge for Julia
+# An algebraic modeling language for Julia
 # See http://github.com/JuliaOpt/JuMP.jl
 #############################################################################
 # test/model.jl
@@ -38,7 +38,96 @@ function opt_build(a::Int; b::Int = 1)
     return Optimizer(a, b)
 end
 
+# Custom set Nonnegative with bridge NonnegativeBridge
+include("nonnegative_bridge.jl")
+
 function test_model()
+    @testset "Result attributes" begin
+        err = JuMP.OptimizeNotCalled()
+        model = Model()
+        @variable(model, x)
+        c = @constraint(model, x ≤ 0)
+        @objective(model, Max, x)
+        @test_throws err JuMP.objective_value(model)
+        @test_throws err JuMP.objective_bound(model)
+        @test_throws err JuMP.value(x)
+        @test_throws err JuMP.value(c)
+        @test_throws err JuMP.dual(c)
+    end
+
+    @testset "Test variable/model 'hygiene'" begin
+        model_x = Model()
+        @variable(model_x, x)
+        model_y = Model()
+        @variable(model_y, y)
+        err = JuMP.VariableNotOwned(y)
+        @testset "Variable" begin
+            @testset "constraint" begin
+                @test_throws err @constraint(model_x, y in MOI.EqualTo(1.0))
+                @test_throws err @constraint(model_x, [x, y] in MOI.Zeros(2))
+            end
+            @testset "objective" begin
+                @test_throws err @objective(model_x, Min, y)
+            end
+        end
+        @testset "Linear" begin
+            @testset "constraint" begin
+                @test_throws err @constraint(model_x, x + y == 1)
+                @test_throws err begin
+                    @constraint(model_x, [x, x + y] in MOI.Zeros(2))
+                end
+                @test_throws err begin
+                    @constraint(model_x, [x + y, x] in MOI.Zeros(2))
+                end
+            end
+            @testset "objective" begin
+                @test_throws err @objective(model_x, Min, x + y)
+            end
+        end
+        @testset "Quadratic" begin
+            @testset "constraint" begin
+                @test_throws err @constraint(model_x, x * y >= 1)
+                @test_throws err begin
+                    @constraint(model_x, [x, x * y] in MOI.Zeros(2))
+                end
+                @test_throws err begin
+                    @constraint(model_x, [x * y, x] in MOI.Zeros(2))
+                end
+                @test_throws err @constraint(model_x, x * x + x + y <= 1)
+                @test_throws err begin
+                    @constraint(model_x, [x, x * x + x + y] in MOI.Zeros(2))
+                end
+                @test_throws err begin
+                    @constraint(model_x, [x * x + x + y, x] in MOI.Zeros(2))
+                end
+            end
+            @testset "objective" begin
+                @test_throws err @objective(model_x, Min, x * y)
+                @test_throws err @objective(model_x, Min, x * x + x + y)
+            end
+        end
+        @testset "Attribute" begin
+            cy = @constraint(model_y, y in MOI.EqualTo(1.0))
+            cerr = JuMP.ConstraintNotOwned(cy)
+            @testset "get" begin
+                @test_throws err begin
+                    MOI.get(model_x, MOI.VariablePrimalStart(), y)
+                end
+                @test_throws cerr begin
+                    MOI.get(model_x, MOI.ConstraintPrimalStart(), cy)
+                end
+            end
+            @testset "set" begin
+                @test_throws err begin
+                    MOI.set(model_x, MOI.VariablePrimalStart(), y, 1.0)
+                end
+                @test_throws cerr begin
+                    MOI.set(model_x, MOI.ConstraintPrimalStart(), cy, 1.0)
+                end
+            end
+        end
+    end
+
     @testset "optimize_hook" begin
         m = Model()
         @test m.optimize_hook === nothing
@@ -106,6 +195,94 @@ function test_model()
             err = ErrorException("Constraints of type MathOptInterface.ScalarAffineFunction{Float64}-in-MathOptInterface.Interval{Float64} are not supported by the solver.")
             @test_throws err @constraint model 0 <= x + 1 <= 1
         end
+
+        @testset "Add bridge" begin
+            function mock()
+                mock = MOIU.MockOptimizer(JuMP.JuMPMOIModel{Float64}(),
+                                          eval_variable_constraint_dual=false)
+                optimize!(mock) = MOIU.mock_optimize!(mock, [1.0],
+                        (MOI.SingleVariable, MOI.GreaterThan{Float64}) => [2.0])
+                MOIU.set_mock_optimize!(mock, optimize!)
+                return mock
+            end
+            factory = with_optimizer(mock)
+            @testset "before loading the constraint to the optimizer" begin
+                @testset "with_optimizer at Model" begin
+                    model = Model(factory)
+                    @variable(model, x)
+                    JuMP.add_bridge(model, NonnegativeBridge)
+                    c = @constraint(model, x in Nonnegative())
+                    JuMP.optimize!(model)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+                @testset "with_optimizer at optimize!" begin
+                    model = Model()
+                    @variable(model, x)
+                    c = @constraint(model, x in Nonnegative())
+                    JuMP.add_bridge(model, NonnegativeBridge)
+                    JuMP.optimize!(model, factory)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+            end
+            @testset "after loading the constraint to the optimizer" begin
+                @testset "with_optimizer at Model" begin
+                    err = ErrorException(string("Constraints of type ",
+                    "MathOptInterface.SingleVariable-in-Nonnegative are not ",
+                    "supported by the solver and there are no bridges that ",
+                    "can reformulate it into supported constraints."))
+                    model = Model(factory)
+                    @variable(model, x)
+                    @test_throws err @constraint(model, x in Nonnegative())
+                    JuMP.add_bridge(model, NonnegativeBridge)
+                    c = @constraint(model, x in Nonnegative())
+                    JuMP.optimize!(model)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+                @testset "with_optimizer at optimize!" begin
+                    err = MOI.UnsupportedConstraint{MOI.SingleVariable,
+                                                    Nonnegative}()
+                    model = Model()
+                    @variable(model, x)
+                    c = @constraint(model, x in Nonnegative())
+                    @test_throws err JuMP.optimize!(model, factory)
+                    JuMP.add_bridge(model, NonnegativeBridge)
+                    JuMP.optimize!(model)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+            end
+            @testset "automatically with BridgeableConstraint" begin
+                @testset "with_optimizer at Model" begin
+                    model = Model(factory)
+                    @variable(model, x)
+                    constraint = ScalarConstraint(x, Nonnegative())
+                    bc = BridgeableConstraint(constraint, NonnegativeBridge)
+                    c = add_constraint(model, bc)
+                    JuMP.optimize!(model)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+                @testset "with_optimizer at optimize!" begin
+                    model = Model()
+                    @variable(model, x)
+                    constraint = ScalarConstraint(x, Nonnegative())
+                    bc = BridgeableConstraint(constraint, NonnegativeBridge)
+                    c = add_constraint(model, bc)
+                    JuMP.optimize!(model, factory)
+                    @test JuMP.value(x) == 1.0
+                    @test JuMP.value(c) == 1.0
+                    @test JuMP.dual(c) == 2.0
+                end
+            end
+        end
     end
 
     @testset "Factories" begin
@@ -156,7 +333,7 @@ end
 function dummy_optimizer_hook(::JuMP.AbstractModel) end
 
 @testset "Model copy" begin
-    for copy_model in (true, true)
+    for copy_model in (true, false)
         @testset "Using $(copy_model ? "JuMP.copy_model" : "Base.copy")" begin
             for caching_mode in (MOIU.AUTOMATIC, MOIU.MANUAL)
                 @testset "In $caching_mode mode" begin
